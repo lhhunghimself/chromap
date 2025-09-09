@@ -1,0 +1,119 @@
+Implementation plan: Fix SAM writer line corruption in Chromap
+
+Goal
+- Eliminate occasional corrupted SAM lines caused by multi-fragment writes and unsafe C-string usage.
+
+Root cause
+- SAM records are emitted in multiple writes; concurrent writers can interleave.
+- Using fprintf(..., "%s", line.data()) is unsafe (data() may not be NUL-terminated pre-C++17) and can over-read.
+
+Scope
+- Mandatory: `MappingWriter<SAMMapping>::AppendMapping` in `src/mapping_writer.cc`, `AppendMappingOutput` in `src/mapping_writer.h`.
+- Optional hardening: add stream locking to future-proof against any multi-call writes.
+
+Design
+- Build the entire SAM record (including tags) into a single std::string and emit it in one call.
+- Replace fprintf + "%s" with fwrite using the exact buffer length.
+- Optionally wrap the single fwrite in stdio's stream lock to prevent interleaving across threads even if future code regresses.
+
+Detailed changes
+
+1) Length-safe output primitive
+File: src/mapping_writer.h
+- Replace the current `AppendMappingOutput` with length-based write.
+
+Before:
+  inline void AppendMappingOutput(const std::string &line) {
+    fprintf(mapping_output_file_, "%s", line.data());
+  }
+
+After:
+  inline void AppendMappingOutput(const std::string &line) {
+    (void)fwrite(line.data(), 1, line.size(), mapping_output_file_);
+  }
+
+Notes:
+- fwrite is thread-safe per call due to internal stream locking.
+- We intentionally ignore return value; optionally check and abort on short writes.
+
+2) Atomic SAM record emission
+File: src/mapping_writer.cc
+- Rewrite `MappingWriter<SAMMapping>::AppendMapping` to construct the full line and write once.
+
+Key points:
+- Compute reference names and positions as today.
+- Build `std::string out; out.reserve(...)` to avoid reallocations.
+- Append all fields with tabs, then conditional CB tag, then a final newline.
+- Call `AppendMappingOutput(out)` exactly once.
+
+Pseudocode:
+  std::string out;
+  out.reserve(256 + mapping.sequence_.size() + mapping.sequence_qual_.size() + mapping.MD_.size());
+  out.append(mapping.read_name_).push_back('\t');
+  out.append(std::to_string(mapping.flag_)).push_back('\t');
+  out.append(reference_sequence_name).push_back('\t');
+  out.append(std::to_string(mapping_start_position)).push_back('\t');
+  out.append(std::to_string(mapping.mapq_)).push_back('\t');
+  out.append(mapping.GenerateCigarString()).push_back('\t');
+  out.append(mate_ref_sequence_name).push_back('\t');
+  out.append(std::to_string(mate_mapping_start_position)).push_back('\t');
+  out.append(std::to_string(mapping.tlen_)).push_back('\t');
+  out.append(mapping.sequence_).push_back('\t');
+  out.append(mapping.sequence_qual_).push_back('\t');
+  out.append(mapping.GenerateIntTagString("NM", mapping.NM_));
+  out.append("\tMD:Z:").append(mapping.MD_);
+  if (cell_barcode_length_ > 0) {
+    out.append("\tCB:Z:")
+       .append(barcode_translator_.Translate(mapping.cell_barcode_, cell_barcode_length_));
+  }
+  out.push_back('\n');
+  this->AppendMappingOutput(out);
+
+3) Optional: Defensive stream locking
+- If you want extra safety even if future code reintroduces multi-call writes:
+  - Wrap the single-call write with `flockfile(mapping_output_file_)`/`funlockfile(mapping_output_file_)`.
+  - Alternatively add a `std::mutex` in `MappingWriter` and lock in `AppendMappingOutput`.
+- This is not strictly necessary after single-call emission, but is low risk.
+
+Non-goals
+- No changes needed for BED/PAF/PAIRS writers; they already emit one call per record.
+- No format changes.
+
+Build & test
+
+A) Build
+- make -j
+
+B) Functional validation
+- Run with a typical dataset at high thread count to stress concurrency.
+- Validate output structure: every non-header line must have at least 11 SAM fields.
+  awk 'BEGIN{FS="\t"} !/^@/ && NF<11{bad++} END{exit bad!=0}' output.sam
+- Use samtools to parse:
+  samtools view -S output.sam > /dev/null
+
+C) Regression test (quick stress)
+- Run twice: `--num-threads 1` and `--num-threads N` (e.g., 16). Outputs should be equally well-formed (ignoring order if low-memory merge changes ordering).
+
+D) Repro guard
+- If output path is `/dev/stderr`, avoid concurrent logging on stderr during the test or redirect logs to a file; or write SAM to a regular file or `/dev/stdout`.
+
+Performance
+- Neutral or slightly improved (fewer stdio calls per record, fewer locks).
+- Reserve reduces allocations.
+
+Risk
+- Low. Changes are localized to output path.
+- fwrite vs fprintf does not affect content; we control the exact bytes.
+
+Rollout
+- Land changes behind no flags.
+- Add a short note to changelog: "Make SAM writer atomic and length-safe to prevent rare line corruption under concurrency."
+
+Code review checklist
+- Confirm only SAM writer previously split lines; others are one-call already.
+- Ensure no accidental trailing spaces or missing tabs/newlines.
+- Verify `mapping.MD_`, `sequence_`, and `sequence_qual_` are unchanged semantics.
+
+Follow-ups (optional)
+- Add a CI check that validates SAM field count on small test outputs.
+- Consider using `setvbuf(mapping_output_file_, NULL, _IOFBF, 1<<20)` at open time for throughput (optional).

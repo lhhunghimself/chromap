@@ -324,11 +324,6 @@ template <>
 void MappingWriter<SAMMapping>::AppendMapping(uint32_t rid,
                                               const SequenceBatch &reference,
                                               const SAMMapping &mapping) {
-  // const char *reference_sequence_name = reference.GetSequenceNameAt(rid);
-  // uint32_t reference_sequence_length = reference.GetSequenceLengthAt(rid);
-  // std::string strand = (mapping.direction & 1) == 1 ? "+" : "-";
-  // uint32_t mapping_end_position = mapping.fragment_start_position +
-  // mapping.fragment_length;
   const char *reference_sequence_name =
       (mapping.flag_ & BAM_FUNMAP) > 0 ? "*" : reference.GetSequenceNameAt(rid);
   const char *mate_ref_sequence_name =
@@ -336,23 +331,45 @@ void MappingWriter<SAMMapping>::AppendMapping(uint32_t rid,
       ((uint32_t)mapping.mrid_ == rid ? "=" : reference.GetSequenceNameAt(mapping.mrid_));
   const uint32_t mapping_start_position = mapping.GetStartPosition();
   const uint32_t mate_mapping_start_position = mapping.mrid_ < 0 ? 0 : (mapping.mpos_ + 1);
-  this->AppendMappingOutput(
-      mapping.read_name_ + "\t" + std::to_string(mapping.flag_) + "\t" +
-      std::string(reference_sequence_name) + "\t" +
-      std::to_string(mapping_start_position) + "\t" +
-      std::to_string(mapping.mapq_) + "\t" + mapping.GenerateCigarString() +
-      "\t" + std::string(mate_ref_sequence_name) + "\t" + 
-      std::to_string(mate_mapping_start_position) + "\t" + 
-      std::to_string(mapping.tlen_) + "\t" +
-      mapping.sequence_ + "\t" + mapping.sequence_qual_ + "\t" +
-      mapping.GenerateIntTagString("NM", mapping.NM_) +
-      "\tMD:Z:" + mapping.MD_);
+
+  // Build the entire SAM record in one string to ensure atomic output
+  std::string out;
+  out.reserve(256 + mapping.sequence_.size() + mapping.sequence_qual_.size() + mapping.MD_.size());
+  
+  out.append(mapping.read_name_);
+  out.push_back('\t');
+  out.append(std::to_string(mapping.flag_));
+  out.push_back('\t');
+  out.append(reference_sequence_name);
+  out.push_back('\t');
+  out.append(std::to_string(mapping_start_position));
+  out.push_back('\t');
+  out.append(std::to_string(mapping.mapq_));
+  out.push_back('\t');
+  out.append(mapping.GenerateCigarString());
+  out.push_back('\t');
+  out.append(mate_ref_sequence_name);
+  out.push_back('\t');
+  out.append(std::to_string(mate_mapping_start_position));
+  out.push_back('\t');
+  out.append(std::to_string(mapping.tlen_));
+  out.push_back('\t');
+  out.append(mapping.sequence_);
+  out.push_back('\t');
+  out.append(mapping.sequence_qual_);
+  out.push_back('\t');
+  out.append(mapping.GenerateIntTagString("NM", mapping.NM_));
+  out.append("\tMD:Z:");
+  out.append(mapping.MD_);
+  
   if (cell_barcode_length_ > 0) {
-    this->AppendMappingOutput("\tCB:Z:" +
-                              barcode_translator_.Translate(
-                                  mapping.cell_barcode_, cell_barcode_length_));
+    out.append("\tCB:Z:");
+    out.append(barcode_translator_.Translate(mapping.cell_barcode_, cell_barcode_length_));
   }
-  this->AppendMappingOutput("\n");
+  
+  out.push_back('\n');
+  
+  this->AppendMappingOutput(out);
 }
 
 template <>

@@ -78,7 +78,7 @@ class MappingWriter {
                      const MappingRecord &mapping);
 
   inline void AppendMappingOutput(const std::string &line) {
-    fprintf(mapping_output_file_, "%s", line.data());
+    (void)fwrite(line.data(), 1, line.size(), mapping_output_file_);
   }
 
   size_t FindBestMappingIndexFromDuplicates(
