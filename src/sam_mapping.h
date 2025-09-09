@@ -228,15 +228,48 @@ class SAMMapping : public Mapping {
     if (n_cigar_ == 0) {
       return "*";
     }
-    std::string cigar_string = "";
+    std::string cigar_string;
+    // Reserve capacity to reduce reallocations
+    cigar_string.reserve(n_cigar_ * 4);  // Estimate: 3 digits + 1 char per operation
+    
+    const char* OP_TO_CHAR = "MIDNSHP=XB";  // Standard op-to-char mapping for codes 0..9
+    
     for (int ci = 0; ci < n_cigar_; ++ci) {
       uint32_t op = bam_cigar_op(cigar_[ci]);
       uint32_t op_length = bam_cigar_oplen(cigar_[ci]);
-      // std::cerr << op << " " << op_length << "\n";
+      
       cigar_string.append(std::to_string(op_length));
-      // cigar_string.append(std::to_string((BAM_CIGAR_STR[op])));
-      cigar_string.push_back((BAM_CIGAR_STR[op]));
+      
+      // Handle out-of-range op codes safely
+      if (op < 10) {
+        cigar_string.push_back(OP_TO_CHAR[op]);
+      } else {
+        cigar_string.push_back('?');  // Signal unexpected value
+#ifndef NDEBUG
+        std::cerr << "Warning: Invalid CIGAR operation code " << op << " in read (using '?')\n";
+#endif
+      }
     }
+    
+#ifndef NDEBUG
+    // Debug validation: check for valid CIGAR format
+    bool has_digits = false;
+    bool has_ops = false;
+    for (char c : cigar_string) {
+      if (c >= '0' && c <= '9') {
+        has_digits = true;
+      } else if (c == 'M' || c == 'I' || c == 'D' || c == 'N' || c == 'S' || 
+                 c == 'H' || c == 'P' || c == '=' || c == 'X' || c == 'B' || c == '?') {
+        has_ops = true;
+      } else {
+        std::cerr << "Warning: Invalid character '" << c << "' in CIGAR string: " << cigar_string << "\n";
+      }
+    }
+    if (!has_digits || !has_ops) {
+      std::cerr << "Warning: Malformed CIGAR string: " << cigar_string << "\n";
+    }
+#endif
+    
     return cigar_string;
   }
   std::string GenerateIntTagString(const std::string &tag, int value) const {

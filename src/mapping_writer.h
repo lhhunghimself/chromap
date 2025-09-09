@@ -8,6 +8,7 @@
 #include <functional>
 #include <iostream>
 #include <limits>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -78,7 +79,25 @@ class MappingWriter {
                      const MappingRecord &mapping);
 
   inline void AppendMappingOutput(const std::string &line) {
-    fprintf(mapping_output_file_, "%s", line.data());
+    std::lock_guard<std::mutex> lock(output_mutex_);
+    
+    const char* data = line.data();
+    size_t remaining = line.size();
+    
+    while (remaining > 0) {
+      size_t written = fwrite(data, 1, remaining, mapping_output_file_);
+      if (written == 0) {
+        // Handle write error
+        if (ferror(mapping_output_file_)) {
+          std::cerr << "Error writing to output file\n";
+          break;
+        }
+        // If no error, it might be a temporary condition, try again
+        clearerr(mapping_output_file_);
+      }
+      data += written;
+      remaining -= written;
+    }
   }
 
   size_t FindBestMappingIndexFromDuplicates(
@@ -115,6 +134,7 @@ class MappingWriter {
   const MappingParameters mapping_parameters_;
   const uint32_t cell_barcode_length_;
   FILE *mapping_output_file_ = nullptr;
+  std::mutex output_mutex_;  // Mutex for thread-safe output writing
   BarcodeTranslator barcode_translator_;
   SummaryMetadata summary_metadata_;
 
