@@ -2,6 +2,13 @@
 
 namespace chromap {
 
+// Static member definitions for thread-safe temp file generation
+template <typename MappingRecord>
+std::atomic<uint32_t> MappingWriter<MappingRecord>::temp_file_counter_{0};
+
+template <typename MappingRecord>
+std::mutex MappingWriter<MappingRecord>::temp_file_handles_mutex_;
+
 // Specialization for BED format.
 template <>
 void MappingWriter<MappingWithBarcode>::OutputHeader(
@@ -201,20 +208,38 @@ void MappingWriter<PAFMapping>::OutputTempMapping(
     const std::vector<std::vector<PAFMapping> > &mappings) {
   FILE *temp_mapping_output_file =
       fopen(temp_mapping_output_file_path.c_str(), "wb");
-  assert(temp_mapping_output_file != NULL);
+  if (temp_mapping_output_file == NULL) {
+    std::cerr << "Error: Cannot create temporary file " << temp_mapping_output_file_path << std::endl;
+    throw std::runtime_error("Failed to create temporary file");
+  }
+  
   for (size_t ri = 0; ri < num_reference_sequences; ++ri) {
     // make sure mappings[ri] exists even if its size is 0
     size_t num_mappings = mappings[ri].size();
-    fwrite(&num_mappings, sizeof(size_t), 1, temp_mapping_output_file);
+    if (fwrite(&num_mappings, sizeof(size_t), 1, temp_mapping_output_file) != 1) {
+      fclose(temp_mapping_output_file);
+      remove(temp_mapping_output_file_path.c_str());
+      std::cerr << "Error: Failed to write to temporary file " << temp_mapping_output_file_path << std::endl;
+      throw std::runtime_error("Failed to write to temporary file");
+    }
     if (mappings[ri].size() > 0) {
       for (size_t mi = 0; mi < num_mappings; ++mi) {
-        mappings[ri][mi].WriteToFile(temp_mapping_output_file);
+        size_t bytes_written = mappings[ri][mi].WriteToFile(temp_mapping_output_file);
+        if (bytes_written == 0) {
+          fclose(temp_mapping_output_file);
+          remove(temp_mapping_output_file_path.c_str());
+          std::cerr << "Error: Failed to write mapping data to temporary file " << temp_mapping_output_file_path << std::endl;
+          throw std::runtime_error("Failed to write mapping data to temporary file");
+        }
       }
-      // fwrite(mappings[ri].data(), sizeof(MappingRecord), mappings[ri].size(),
-      // temp_mapping_output_file);
     }
   }
-  fclose(temp_mapping_output_file);
+  
+  if (fclose(temp_mapping_output_file) != 0) {
+    remove(temp_mapping_output_file_path.c_str());
+    std::cerr << "Error: Failed to close temporary file " << temp_mapping_output_file_path << std::endl;
+    throw std::runtime_error("Failed to close temporary file");
+  }
 }
 
 // Specialization for PairedPAF format.
@@ -229,20 +254,38 @@ void MappingWriter<PairedPAFMapping>::OutputTempMapping(
     const std::vector<std::vector<PairedPAFMapping> > &mappings) {
   FILE *temp_mapping_output_file =
       fopen(temp_mapping_output_file_path.c_str(), "wb");
-  assert(temp_mapping_output_file != NULL);
+  if (temp_mapping_output_file == NULL) {
+    std::cerr << "Error: Cannot create temporary file " << temp_mapping_output_file_path << std::endl;
+    throw std::runtime_error("Failed to create temporary file");
+  }
+  
   for (size_t ri = 0; ri < num_reference_sequences; ++ri) {
     // make sure mappings[ri] exists even if its size is 0
     size_t num_mappings = mappings[ri].size();
-    fwrite(&num_mappings, sizeof(size_t), 1, temp_mapping_output_file);
+    if (fwrite(&num_mappings, sizeof(size_t), 1, temp_mapping_output_file) != 1) {
+      fclose(temp_mapping_output_file);
+      remove(temp_mapping_output_file_path.c_str());
+      std::cerr << "Error: Failed to write to temporary file " << temp_mapping_output_file_path << std::endl;
+      throw std::runtime_error("Failed to write to temporary file");
+    }
     if (mappings[ri].size() > 0) {
       for (size_t mi = 0; mi < num_mappings; ++mi) {
-        mappings[ri][mi].WriteToFile(temp_mapping_output_file);
+        size_t bytes_written = mappings[ri][mi].WriteToFile(temp_mapping_output_file);
+        if (bytes_written == 0) {
+          fclose(temp_mapping_output_file);
+          remove(temp_mapping_output_file_path.c_str());
+          std::cerr << "Error: Failed to write mapping data to temporary file " << temp_mapping_output_file_path << std::endl;
+          throw std::runtime_error("Failed to write mapping data to temporary file");
+        }
       }
-      // fwrite(mappings[ri].data(), sizeof(MappingRecord), mappings[ri].size(),
-      // temp_mapping_output_file);
     }
   }
-  fclose(temp_mapping_output_file);
+  
+  if (fclose(temp_mapping_output_file) != 0) {
+    remove(temp_mapping_output_file_path.c_str());
+    std::cerr << "Error: Failed to close temporary file " << temp_mapping_output_file_path << std::endl;
+    throw std::runtime_error("Failed to close temporary file");
+  }
 }
 
 template <>
@@ -362,20 +405,38 @@ void MappingWriter<SAMMapping>::OutputTempMapping(
     const std::vector<std::vector<SAMMapping> > &mappings) {
   FILE *temp_mapping_output_file =
       fopen(temp_mapping_output_file_path.c_str(), "wb");
-  assert(temp_mapping_output_file != NULL);
+  if (temp_mapping_output_file == NULL) {
+    std::cerr << "Error: Cannot create temporary file " << temp_mapping_output_file_path << std::endl;
+    throw std::runtime_error("Failed to create temporary file");
+  }
+  
   for (size_t ri = 0; ri < num_reference_sequences; ++ri) {
     // make sure mappings[ri] exists even if its size is 0
     size_t num_mappings = mappings[ri].size();
-    fwrite(&num_mappings, sizeof(size_t), 1, temp_mapping_output_file);
+    if (fwrite(&num_mappings, sizeof(size_t), 1, temp_mapping_output_file) != 1) {
+      fclose(temp_mapping_output_file);
+      remove(temp_mapping_output_file_path.c_str());
+      std::cerr << "Error: Failed to write to temporary file " << temp_mapping_output_file_path << std::endl;
+      throw std::runtime_error("Failed to write to temporary file");
+    }
     if (mappings[ri].size() > 0) {
       for (size_t mi = 0; mi < num_mappings; ++mi) {
-        mappings[ri][mi].WriteToFile(temp_mapping_output_file);
+        size_t bytes_written = mappings[ri][mi].WriteToFile(temp_mapping_output_file);
+        if (bytes_written == 0) {
+          fclose(temp_mapping_output_file);
+          remove(temp_mapping_output_file_path.c_str());
+          std::cerr << "Error: Failed to write mapping data to temporary file " << temp_mapping_output_file_path << std::endl;
+          throw std::runtime_error("Failed to write mapping data to temporary file");
+        }
       }
-      // fwrite(mappings[ri].data(), sizeof(MappingRecord), mappings[ri].size(),
-      // temp_mapping_output_file);
     }
   }
-  fclose(temp_mapping_output_file);
+  
+  if (fclose(temp_mapping_output_file) != 0) {
+    remove(temp_mapping_output_file_path.c_str());
+    std::cerr << "Error: Failed to close temporary file " << temp_mapping_output_file_path << std::endl;
+    throw std::runtime_error("Failed to close temporary file");
+  }
 }
 
 // Specialization for pairs format.
@@ -425,20 +486,48 @@ void MappingWriter<PairsMapping>::OutputTempMapping(
     const std::vector<std::vector<PairsMapping> > &mappings) {
   FILE *temp_mapping_output_file =
       fopen(temp_mapping_output_file_path.c_str(), "wb");
-  assert(temp_mapping_output_file != NULL);
+  if (temp_mapping_output_file == NULL) {
+    std::cerr << "Error: Cannot create temporary file " << temp_mapping_output_file_path << std::endl;
+    throw std::runtime_error("Failed to create temporary file");
+  }
+  
   for (size_t ri = 0; ri < num_reference_sequences; ++ri) {
     // make sure mappings[ri] exists even if its size is 0
     size_t num_mappings = mappings[ri].size();
-    fwrite(&num_mappings, sizeof(size_t), 1, temp_mapping_output_file);
+    if (fwrite(&num_mappings, sizeof(size_t), 1, temp_mapping_output_file) != 1) {
+      fclose(temp_mapping_output_file);
+      remove(temp_mapping_output_file_path.c_str());
+      std::cerr << "Error: Failed to write to temporary file " << temp_mapping_output_file_path << std::endl;
+      throw std::runtime_error("Failed to write to temporary file");
+    }
     if (mappings[ri].size() > 0) {
       for (size_t mi = 0; mi < num_mappings; ++mi) {
-        mappings[ri][mi].WriteToFile(temp_mapping_output_file);
+        size_t bytes_written = mappings[ri][mi].WriteToFile(temp_mapping_output_file);
+        if (bytes_written == 0) {
+          fclose(temp_mapping_output_file);
+          remove(temp_mapping_output_file_path.c_str());
+          std::cerr << "Error: Failed to write mapping data to temporary file " << temp_mapping_output_file_path << std::endl;
+          throw std::runtime_error("Failed to write mapping data to temporary file");
+        }
       }
-      // fwrite(mappings[ri].data(), sizeof(MappingRecord), mappings[ri].size(),
-      // temp_mapping_output_file);
     }
   }
-  fclose(temp_mapping_output_file);
+  
+  if (fclose(temp_mapping_output_file) != 0) {
+    remove(temp_mapping_output_file_path.c_str());
+    std::cerr << "Error: Failed to close temporary file " << temp_mapping_output_file_path << std::endl;
+    throw std::runtime_error("Failed to close temporary file");
+  }
 }
+
+// Explicit template instantiations for all used mapping types
+template class MappingWriter<MappingWithBarcode>;
+template class MappingWriter<MappingWithoutBarcode>;
+template class MappingWriter<PairedEndMappingWithBarcode>;
+template class MappingWriter<PairedEndMappingWithoutBarcode>;
+template class MappingWriter<PAFMapping>;
+template class MappingWriter<PairedPAFMapping>;
+template class MappingWriter<SAMMapping>;
+template class MappingWriter<PairsMapping>;
 
 }  // namespace chromap

@@ -3,11 +3,14 @@
 
 #include <assert.h>
 
+#include <atomic>
 #include <cinttypes>
 #include <cstring>
 #include <functional>
 #include <iostream>
 #include <limits>
+#include <mutex>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -97,17 +100,36 @@ class MappingWriter {
       const std::vector<std::vector<MappingRecord>> &mappings) {
     FILE *temp_mapping_output_file =
         fopen(temp_mapping_output_file_path.c_str(), "wb");
-    assert(temp_mapping_output_file != NULL);
+    if (temp_mapping_output_file == NULL) {
+      std::cerr << "Error: Cannot create temporary file " << temp_mapping_output_file_path << std::endl;
+      throw std::runtime_error("Failed to create temporary file");
+    }
+    
     for (size_t ri = 0; ri < num_reference_sequences; ++ri) {
       // make sure mappings[ri] exists even if its size is 0
       size_t num_mappings = mappings[ri].size();
-      fwrite(&num_mappings, sizeof(size_t), 1, temp_mapping_output_file);
+      if (fwrite(&num_mappings, sizeof(size_t), 1, temp_mapping_output_file) != 1) {
+        fclose(temp_mapping_output_file);
+        remove(temp_mapping_output_file_path.c_str());
+        std::cerr << "Error: Failed to write to temporary file " << temp_mapping_output_file_path << std::endl;
+        throw std::runtime_error("Failed to write to temporary file");
+      }
       if (mappings[ri].size() > 0) {
-        fwrite(mappings[ri].data(), sizeof(MappingRecord), mappings[ri].size(),
-               temp_mapping_output_file);
+        if (fwrite(mappings[ri].data(), sizeof(MappingRecord), mappings[ri].size(),
+                   temp_mapping_output_file) != mappings[ri].size()) {
+          fclose(temp_mapping_output_file);
+          remove(temp_mapping_output_file_path.c_str());
+          std::cerr << "Error: Failed to write mapping data to temporary file " << temp_mapping_output_file_path << std::endl;
+          throw std::runtime_error("Failed to write mapping data to temporary file");
+        }
       }
     }
-    fclose(temp_mapping_output_file);
+    
+    if (fclose(temp_mapping_output_file) != 0) {
+      remove(temp_mapping_output_file_path.c_str());
+      std::cerr << "Error: Failed to close temporary file " << temp_mapping_output_file_path << std::endl;
+      throw std::runtime_error("Failed to close temporary file");
+    }
   }
 
   // TODO(Haowen): use mapping_output_format_ variable to decide output in BED
@@ -120,6 +142,10 @@ class MappingWriter {
 
   // for pairs
   const std::vector<int> pairs_custom_rid_rank_;
+
+  // Thread-safe temp file generation
+  static std::atomic<uint32_t> temp_file_counter_;
+  static std::mutex temp_file_handles_mutex_;
 };
 
 template <typename MappingRecord>
@@ -381,20 +407,30 @@ void MappingWriter<MappingRecord>::OutputTempMappings(
     std::vector<std::vector<MappingRecord>> &mappings_on_diff_ref_seqs,
     std::vector<TempMappingFileHandle<MappingRecord>>
         &temp_mapping_file_handles) {
+  
+  // Generate unique filename using atomic counter
+  uint32_t file_id = temp_file_counter_.fetch_add(1);
+  
   TempMappingFileHandle<MappingRecord> temp_mapping_file_handle;
   temp_mapping_file_handle.file_path =
       mapping_parameters_.mapping_output_file_path + ".temp" +
-      std::to_string(temp_mapping_file_handles.size());
+      std::to_string(file_id);
   if (mapping_parameters_.mapping_output_file_path == "/dev/stdout"
       || mapping_parameters_.mapping_output_file_path == "/dev/stderr")
   {
     temp_mapping_file_handle.file_path = "chromap_output.temp" +
-      std::to_string(temp_mapping_file_handles.size());
+      std::to_string(file_id);
   }
-  temp_mapping_file_handles.emplace_back(temp_mapping_file_handle);
 
+  // Write the temp file first before registering the handle
   OutputTempMapping(temp_mapping_file_handle.file_path, num_reference_sequences,
                     mappings_on_diff_ref_seqs);
+  
+  // Thread-safe registration of the handle only after successful write
+  {
+    std::lock_guard<std::mutex> lock(temp_file_handles_mutex_);
+    temp_mapping_file_handles.emplace_back(temp_mapping_file_handle);
+  }
 
   for (uint32_t i = 0; i < num_reference_sequences; ++i) {
     mappings_on_diff_ref_seqs[i].clear();
