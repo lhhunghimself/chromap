@@ -521,26 +521,34 @@ void Chromap::MapSingleEndReads() {
               mappings_on_diff_ref_seqs_for_diff_threads_for_saving);
 #pragma omp task
           {
-            num_mappings_in_mem +=
+            uint32_t added_mappings = 
                 mapping_processor.MoveMappingsInBuffersToMappingContainer(
                     num_reference_sequences,
                     mappings_on_diff_ref_seqs_for_diff_threads_for_saving,
                     mappings_on_diff_ref_seqs);
-            if (mapping_parameters_.low_memory_mode &&
-                num_mappings_in_mem > max_num_mappings_in_mem) {
-              mapping_processor.ParallelSortOutputMappings(num_reference_sequences,
-                                                   mappings_on_diff_ref_seqs, 0);
+            
+#pragma omp atomic
+            num_mappings_in_mem += added_mappings;
+            
+            if (mapping_parameters_.low_memory_mode) {
+#pragma omp critical(output_flush)
+              {
+                if (num_mappings_in_mem > max_num_mappings_in_mem) {
+                  mapping_processor.ParallelSortOutputMappings(num_reference_sequences,
+                                                       mappings_on_diff_ref_seqs, 0);
 
-              mapping_writer.OutputTempMappings(num_reference_sequences,
-                                                mappings_on_diff_ref_seqs,
-                                                temp_mapping_file_handles);
+                  mapping_writer.OutputTempMappings(num_reference_sequences,
+                                                    mappings_on_diff_ref_seqs,
+                                                    temp_mapping_file_handles);
 
-              if (temp_mapping_file_handles.size() > 850
-                  && temp_mapping_file_handles.size() % 10 == 1) { // every 10 temp files, double the temp file size
-                max_num_mappings_in_mem <<= 1;
-                std::cerr << "Used " << temp_mapping_file_handles.size() << "temp files. Double the temp file volume to " << max_num_mappings_in_mem << "\n" ;
+                  if (temp_mapping_file_handles.size() > 850
+                      && temp_mapping_file_handles.size() % 10 == 1) { // every 10 temp files, double the temp file size
+                    max_num_mappings_in_mem <<= 1;
+                    std::cerr << "Used " << temp_mapping_file_handles.size() << "temp files. Double the temp file volume to " << max_num_mappings_in_mem << "\n" ;
+                  }
+                  num_mappings_in_mem = 0;
+                }
               }
-              num_mappings_in_mem = 0;
             }
           }
           std::cerr << "Mapped " << num_loaded_reads << " reads in "
@@ -1245,25 +1253,33 @@ void Chromap::MapPairedEndReads() {
 #pragma omp task
           {
             // Handle output
-            num_mappings_in_mem +=
+            uint32_t added_mappings =
                 mapping_processor.MoveMappingsInBuffersToMappingContainer(
                     num_reference_sequences,
                     mappings_on_diff_ref_seqs_for_diff_threads_for_saving,
                     mappings_on_diff_ref_seqs);
-            if (mapping_parameters_.low_memory_mode &&
-                num_mappings_in_mem > max_num_mappings_in_mem) {
-              mapping_processor.ParallelSortOutputMappings(num_reference_sequences,
-                                                   mappings_on_diff_ref_seqs, 0);
+            
+#pragma omp atomic
+            num_mappings_in_mem += added_mappings;
+            
+            if (mapping_parameters_.low_memory_mode) {
+#pragma omp critical(output_flush)
+              {
+                if (num_mappings_in_mem > max_num_mappings_in_mem) {
+                  mapping_processor.ParallelSortOutputMappings(num_reference_sequences,
+                                                       mappings_on_diff_ref_seqs, 0);
 
-              mapping_writer.OutputTempMappings(num_reference_sequences,
-                                                mappings_on_diff_ref_seqs,
-                                                temp_mapping_file_handles);
-              if (temp_mapping_file_handles.size() > 850
-                  && temp_mapping_file_handles.size() % 10 == 1) { // every 10 temp files, double the temp file size
-                max_num_mappings_in_mem <<= 1;
-                std::cerr << "Used " << temp_mapping_file_handles.size() << "temp files. Double the temp file volume to " << max_num_mappings_in_mem << "\n" ;
+                  mapping_writer.OutputTempMappings(num_reference_sequences,
+                                                    mappings_on_diff_ref_seqs,
+                                                    temp_mapping_file_handles);
+                  if (temp_mapping_file_handles.size() > 850
+                      && temp_mapping_file_handles.size() % 10 == 1) { // every 10 temp files, double the temp file size
+                    max_num_mappings_in_mem <<= 1;
+                    std::cerr << "Used " << temp_mapping_file_handles.size() << "temp files. Double the temp file volume to " << max_num_mappings_in_mem << "\n" ;
+                  }
+                  num_mappings_in_mem = 0;
+                }
               }
-              num_mappings_in_mem = 0;
             }
           }  // end of omp task to handle output
         }    // end of while num_loaded_pairs

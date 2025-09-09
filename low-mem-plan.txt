@@ -1,0 +1,101 @@
+Plan: Hardening low-memory spill path concurrency in Chromap
+
+Goal
+- Make temp spill (low-memory mode) robust under OpenMP tasks by eliminating races on shared containers and temp file bookkeeping.
+
+Root issues observed
+1) Unsynchronized shared state in output task
+   - num_mappings_in_mem updated concurrently.
+   - Shared mappings container (mappings_on_diff_ref_seqs) sorted/cleared by multiple tasks.
+   - temp_mapping_file_handles appended from multiple tasks.
+2) Temp file name collisions
+   - File path derived from temp_mapping_file_handles.size() without synchronization.
+3) Non-fatal but noisy: fread return values ignored in temp_mapping.h (robustness).
+
+Design principles
+- Single owner at a time for the flush sequence (sort → spill → clear → bookkeeping).
+- Generate temp file names using atomic or within the same critical region as push-back.
+- Keep changes minimal and localized; avoid large restructuring.
+
+Detailed changes
+
+A) Serialize the flush block
+File: src/chromap.h
+Locations: inside the output tasks where we check low_memory_mode and threshold (both SE and PE paths).
+
+Current pattern:
+  num_mappings_in_mem += MoveMappingsInBuffersToMappingContainer(...);
+  if (low_memory_mode && num_mappings_in_mem > max_num_mappings_in_mem) {
+    ParallelSortOutputMappings(..., mappings_on_diff_ref_seqs, 0);
+    mapping_writer.OutputTempMappings(..., mappings_on_diff_ref_seqs, temp_mapping_file_handles);
+    ... adjust max_num_mappings_in_mem ...
+    num_mappings_in_mem = 0;
+  }
+
+Change to:
+  #pragma omp atomic
+  num_mappings_in_mem += MoveMappingsInBuffersToMappingContainer(...);
+  if (mapping_parameters_.low_memory_mode) {
+    bool should_flush = false;
+    {
+      #pragma omp critical(output_flush)
+      {
+        if (num_mappings_in_mem > max_num_mappings_in_mem) {
+          should_flush = true;
+          // do the entire flush sequence inside this critical
+          ParallelSortOutputMappings(..., mappings_on_diff_ref_seqs, 0);
+          mapping_writer.OutputTempMappings(..., mappings_on_diff_ref_seqs, temp_mapping_file_handles);
+          if (temp_mapping_file_handles.size() > 850 && temp_mapping_file_handles.size() % 10 == 1) {
+            max_num_mappings_in_mem <<= 1;
+            std::cerr << "Used " << temp_mapping_file_handles.size() << "temp files. Double the temp file volume to " << max_num_mappings_in_mem << "\n";
+          }
+          num_mappings_in_mem = 0;
+        }
+      }
+    }
+  }
+
+Notes:
+- We guard sort/spill/clear and handle list mutations under the same critical region.
+- Atomic add prevents lost updates between tasks.
+
+B) Make temp file naming collision-proof
+File: src/mapping_writer.h (OutputTempMappings)
+
+Current:
+  temp_mapping_file_handle.file_path = mapping_output_file_path + ".temp" + to_string(temp_mapping_file_handles.size());
+  temp_mapping_file_handles.emplace_back(temp_mapping_file_handle);
+
+Change options (pick one):
+1) Do not change here; instead ensure OutputTempMappings is only called inside the critical(output_flush) region so size() is unique at call time.
+2) Or introduce a static atomic counter in MappingWriter and generate names via fetch_add(). Example:
+   static std::atomic<uint64_t> temp_file_counter{0};
+   uint64_t id = temp_file_counter.fetch_add(1, std::memory_order_relaxed);
+   file_path = mapping_output + ".temp" + std::to_string(id);
+
+Recommendation: Option 1 is sufficient given A) (critical section).
+
+C) Avoid concurrent mutation of mappings_on_diff_ref_seqs
+- The critical region in A) already ensures only one task sorts/spills/clears at a time.
+- Ensure MoveMappingsInBuffersToMappingContainer appends to mappings_on_diff_ref_seqs only outside critical, then the critical block operates on the result.
+
+D) Improve robustness in temp_mapping.h (optional)
+- Check fread return values; if fewer than requested elements are read, handle EOF/corruption gracefully. This reduces noisy warnings and improves stability with many files.
+
+Validation
+- Build with -fopenmp; run with low_memory_mode enabled and small max mem threshold to force frequent spills.
+- Add a stress run with num_threads >= 8.
+- Confirm no duplicate/colliding temp filenames; no crashes; final merge succeeds.
+
+Quick test ideas
+- Instrument temp file creation by printing file_path and thread id under debug flag.
+- After run, ensure all .temp* files were removed by ProcessAndOutputMappingsInLowMemory.
+
+Performance considerations
+- The critical section only wraps the flush sequence, which is already heavy (sort+I/O). Contention overhead should be negligible relative to the work.
+- Atomic increment cost is minimal versus mapping work.
+
+Rollout
+- Implement A) first (critical + atomic). Re-run mapping.
+- If ever moving OutputTempMappings outside the critical, adopt B2) atomic counter.
+
