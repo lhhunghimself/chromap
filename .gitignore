@@ -1,0 +1,8 @@
+# Build artifacts
+chromap
+objs/
+*.o
+
+# Test files
+test_output*.sam
+test_index
