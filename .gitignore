@@ -1,0 +1,13 @@
+# Build artifacts
+chromap
+objs/
+*.o
+
+# Test output files
+test_index
+test_output.sam
+test_output.*
+
+# Temporary files
+*.tmp
+*.temp
