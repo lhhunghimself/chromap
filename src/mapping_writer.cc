@@ -336,7 +336,9 @@ void MappingWriter<SAMMapping>::AppendMapping(uint32_t rid,
       ((uint32_t)mapping.mrid_ == rid ? "=" : reference.GetSequenceNameAt(mapping.mrid_));
   const uint32_t mapping_start_position = mapping.GetStartPosition();
   const uint32_t mate_mapping_start_position = mapping.mrid_ < 0 ? 0 : (mapping.mpos_ + 1);
-  this->AppendMappingOutput(
+  
+  // Build complete SAM record line atomically to prevent race conditions in parallel execution
+  std::string sam_line = 
       mapping.read_name_ + "\t" + std::to_string(mapping.flag_) + "\t" +
       std::string(reference_sequence_name) + "\t" +
       std::to_string(mapping_start_position) + "\t" +
@@ -346,13 +348,17 @@ void MappingWriter<SAMMapping>::AppendMapping(uint32_t rid,
       std::to_string(mapping.tlen_) + "\t" +
       mapping.sequence_ + "\t" + mapping.sequence_qual_ + "\t" +
       mapping.GenerateIntTagString("NM", mapping.NM_) +
-      "\tMD:Z:" + mapping.MD_);
+      "\tMD:Z:" + mapping.MD_;
+  
   if (cell_barcode_length_ > 0) {
-    this->AppendMappingOutput("\tCB:Z:" +
-                              barcode_translator_.Translate(
-                                  mapping.cell_barcode_, cell_barcode_length_));
+    sam_line += "\tCB:Z:" +
+                barcode_translator_.Translate(
+                    mapping.cell_barcode_, cell_barcode_length_);
   }
-  this->AppendMappingOutput("\n");
+  sam_line += "\n";
+  
+  // Output complete line atomically
+  this->AppendMappingOutput(sam_line);
 }
 
 template <>
