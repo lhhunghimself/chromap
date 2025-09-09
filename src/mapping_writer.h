@@ -8,6 +8,7 @@
 #include <functional>
 #include <iostream>
 #include <limits>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -78,7 +79,19 @@ class MappingWriter {
                      const MappingRecord &mapping);
 
   inline void AppendMappingOutput(const std::string &line) {
-    fprintf(mapping_output_file_, "%s", line.data());
+    std::lock_guard<std::mutex> lock(output_mutex_);
+    const char* data = line.data();
+    size_t size = line.size();
+    size_t written = 0;
+    
+    while (written < size) {
+      size_t result = fwrite(data + written, 1, size - written, mapping_output_file_);
+      if (result == 0) {
+        // Handle write error
+        break;
+      }
+      written += result;
+    }
   }
 
   size_t FindBestMappingIndexFromDuplicates(
@@ -120,6 +133,9 @@ class MappingWriter {
 
   // for pairs
   const std::vector<int> pairs_custom_rid_rank_;
+
+ private:
+  std::mutex output_mutex_;
 };
 
 template <typename MappingRecord>
