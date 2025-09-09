@@ -318,41 +318,68 @@ void MappingWriter<SAMMapping>::OutputHeader(uint32_t num_reference_sequences,
         "@SQ\tSN:" + std::string(reference_sequence_name) +
         "\tLN:" + std::to_string(reference_sequence_length) + "\n");
   }
+  // Ensure header is fully emitted before mappings start
+  fflush(this->mapping_output_file_);
 }
 
+// Replace the existing SAM AppendMapping specialization with a version that
+// builds the entire line and emits it once within an OpenMP critical section.
 template <>
 void MappingWriter<SAMMapping>::AppendMapping(uint32_t rid,
                                               const SequenceBatch &reference,
                                               const SAMMapping &mapping) {
-  // const char *reference_sequence_name = reference.GetSequenceNameAt(rid);
-  // uint32_t reference_sequence_length = reference.GetSequenceLengthAt(rid);
-  // std::string strand = (mapping.direction & 1) == 1 ? "+" : "-";
-  // uint32_t mapping_end_position = mapping.fragment_start_position +
-  // mapping.fragment_length;
   const char *reference_sequence_name =
       (mapping.flag_ & BAM_FUNMAP) > 0 ? "*" : reference.GetSequenceNameAt(rid);
   const char *mate_ref_sequence_name =
-      mapping.mrid_ < 0 ? "*" : 
+      mapping.mrid_ < 0 ? "*" :
       ((uint32_t)mapping.mrid_ == rid ? "=" : reference.GetSequenceNameAt(mapping.mrid_));
   const uint32_t mapping_start_position = mapping.GetStartPosition();
   const uint32_t mate_mapping_start_position = mapping.mrid_ < 0 ? 0 : (mapping.mpos_ + 1);
-  this->AppendMappingOutput(
-      mapping.read_name_ + "\t" + std::to_string(mapping.flag_) + "\t" +
-      std::string(reference_sequence_name) + "\t" +
-      std::to_string(mapping_start_position) + "\t" +
-      std::to_string(mapping.mapq_) + "\t" + mapping.GenerateCigarString() +
-      "\t" + std::string(mate_ref_sequence_name) + "\t" + 
-      std::to_string(mate_mapping_start_position) + "\t" + 
-      std::to_string(mapping.tlen_) + "\t" +
-      mapping.sequence_ + "\t" + mapping.sequence_qual_ + "\t" +
-      mapping.GenerateIntTagString("NM", mapping.NM_) +
-      "\tMD:Z:" + mapping.MD_);
+
+  // Build full SAM line
+  std::string line;
+  line.reserve(512);
+
+  line += mapping.read_name_;
+  line += '\t';
+  line += std::to_string(mapping.flag_);
+  line += '\t';
+  line += std::string(reference_sequence_name);
+  line += '\t';
+  line += std::to_string(mapping_start_position);
+  line += '\t';
+  line += std::to_string(mapping.mapq_);
+  line += '\t';
+  line += mapping.GenerateCigarString();
+  line += '\t';
+  line += std::string(mate_ref_sequence_name);
+  line += '\t';
+  line += std::to_string(mate_mapping_start_position);
+  line += '\t';
+  line += std::to_string(mapping.tlen_);
+  line += '\t';
+  line += mapping.sequence_;
+  line += '\t';
+  line += mapping.sequence_qual_;
+  line += '\t';
+  line += mapping.GenerateIntTagString("NM", mapping.NM_);
+  line += '\t';
+  line += "MD:Z:";
+  line += mapping.MD_;
+
   if (cell_barcode_length_ > 0) {
-    this->AppendMappingOutput("\tCB:Z:" +
-                              barcode_translator_.Translate(
-                                  mapping.cell_barcode_, cell_barcode_length_));
+    line += "\tCB:Z:";
+    line += barcode_translator_.Translate(
+        mapping.cell_barcode_, cell_barcode_length_);
   }
-  this->AppendMappingOutput("\n");
+  line += '\n';
+
+  // Serialize entire record emission to avoid interleaving across threads
+  #pragma omp critical(mapping_output)
+  {
+    // Use the existing append sink (fprintf) to keep behavior consistent
+    this->AppendMappingOutput(line);
+  }
 }
 
 template <>

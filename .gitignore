@@ -1,0 +1,19 @@
+# Build artifacts
+chromap
+objs/
+*.o
+
+# Temporary files
+*.temp*
+chromap_output.temp*
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
